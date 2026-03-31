@@ -3,6 +3,7 @@
 ## 简介
 
 这是一个 TrafficMonitor 插件，可以在 Windows 任务栏实时显示米家/酷控（cuco）智能插座的功率数值，并可选开启功率历史记录功能。
+![Uploading {FA2BAE25-3610-447C-AE57-5EAE5E8059CB}.png…]()
 
 **主要功能：**
 - 📊 实时在任务栏显示功率（W）
