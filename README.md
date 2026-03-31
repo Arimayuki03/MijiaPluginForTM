@@ -13,35 +13,13 @@
 
 ---
 
-## 编译说明
+## 🚀 快速安装
 
-### 环境要求
-
-- Visual Studio 2019 或 2022（推荐 VS2022）
-- Windows SDK 10.0+
-- C++17 标准
-
-### 编译步骤
-
-1. 用 Visual Studio 打开 `MijiaPowerPlugin.sln`
-2. 选择目标平台：
-   - 如果你的 TrafficMonitor 是 **x64 版本** → 选 `Release | x64`
-   - 如果你的 TrafficMonitor 是 **x86/32位版本** → 选 `Release | Win32`
-3. 点击 **生成 → 生成解决方案**（或 `Ctrl+Shift+B`）
-4. 编译成功后，DLL 文件位于：
-   ```
-   bin\Release\x64\MijiaPower.dll
-   ```
-
----
-
-## 安装说明
-
-1. 找到 TrafficMonitor 主程序所在目录
-2. 如果没有 `plugins` 子目录，手动创建：`<TrafficMonitor目录>\plugins\`
-3. 将 `MijiaPower.dll` 复制到 `plugins` 目录中
-4. **重启** TrafficMonitor
-5. 在 TrafficMonitor 中右键 → **选项** → **常规设置** → **插件管理** → 查看是否加载成功
+1. **获取 IP 和 Token** → 使用 [Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor/releases)
+2. **打开插件目录** → TrafficMonitor 右键 → 选项 → 常规设置 → 下滑找到插件管理 → 打开插件目录
+3. **放入 DLL** → 将 `MijiaPower.dll` 复制到目录内
+4. **重启 TrafficMonitor** → 完全退出后重新启动
+5. **填写配置** → 在插件选项中输入 IP 和 Token，点击"测试连接"
 
 ---
 
@@ -124,6 +102,48 @@ python -m miio.extract_tokens
 - 在米家 APP 中操作设备
 - 在代理日志中查找相关请求
 - 从 JSON 响应中提取 Token 字段
+
+---
+
+## 📖 使用教程
+
+### 第一步：获取 IP 和 Token
+
+1. 下载 [Xiaomi Cloud Tokens Extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor/releases)
+2. 运行 `.exe` 文件
+3. 输入米家账户（邮箱/手机号）和密码，选择 China 服务器
+4. 等待提取完成，记录你的插座设备的 **IP** 和 **Token**
+
+### 第二步：安装插件
+
+1. 右键 TrafficMonitor 任务栏 → **选项**
+2. 选择 **常规设置** → 下滑找到 **插件管理**
+3. 点击 **打开插件目录**
+4. 将 `MijiaPower.dll` 复制到打开的目录中
+5. **完全关闭 TrafficMonitor**，重新启动
+
+### 第三步：配置插件
+
+1. 重启后，右键 TrafficMonitor → **选项**
+2. 左侧菜单选择 **MijiaPowerPlugin**
+3. 填写设备信息：
+   - **设备 IP**: 从第一步获取
+   - **Token**: 从第一步获取  
+   - **名称**: 自定义设备名称（如"客厅插座"）
+4. 点击 **测试连接** 验证
+5. 点击 **确定** 保存
+
+![插件配置界面](image.png)
+
+### 配置选项说明
+
+| 选项 | 说明 |
+|------|------|
+| 启用功率历史记录 | 开启后按分钟采样，保存7天数据 |
+| 显示"功率:"标签 | 任务栏是否显示"功率:"前缀 |
+| 显示 W 单位 | 数值后是否显示"W"单位符号 |
+| 采集间隔（秒） | 查询设备的时间间隔，建议 3-5 秒 |
+| 小数位数 | 显示精度：0=整数，1=一位小数，2=两位小数 |
 
 ---
 
