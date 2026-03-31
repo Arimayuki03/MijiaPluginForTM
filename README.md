@@ -292,7 +292,7 @@ python -m miio.extract_tokens
 | 能耗 | 11 | 1 | 累计用电量 |
 | 温度 | 12 | 2 | 插座温度 |
 
-已知兼容型号：`cuco.plug.v3`（酷控智能插座V3）
+已知兼容型号：`cuco.plug.v3`（米家智能插座3）
 
 ---
 
