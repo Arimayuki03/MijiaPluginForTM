@@ -57,7 +57,7 @@ static void ToUtf8(const std::wstring& w, char* out, size_t outLen) {
 // ═══════════════════════════════════════════════
 const wchar_t* CPowerItem::GetItemName() const {
     m_nameText = L"米家插座功率";
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     if (m_index >= 0 && m_index < (int)cfg.devices.size())
         m_nameText += L"(" + cfg.devices[m_index].name + L")";
     return m_nameText.c_str();
@@ -73,7 +73,7 @@ const wchar_t* CPowerItem::GetItemId() const {
 }
 
 const wchar_t* CPowerItem::GetItemLableText() const {
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     if (!cfg.showLabel || m_index >= (int)cfg.devices.size())
         m_labelText = L"";
     else
@@ -82,13 +82,14 @@ const wchar_t* CPowerItem::GetItemLableText() const {
 }
 
 const wchar_t* CPowerItem::GetItemValueText() const {
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     if (m_index < 0 || m_index >= (int)cfg.devices.size()) {
         m_valueText = L"--";
         return m_valueText.c_str();
     }
     const DeviceConfig& dev = cfg.devices[m_index];
-    if (dev.ip.empty() || dev.token.empty())
+    // Token 格式非法时不可能连接成功，显示“未配置”而非永远“连接中...”
+    if (dev.ip.empty() || dev.token.empty() || !IsValidToken(dev.token))
         m_valueText = L"未配置";
     else if (!m_plugin || !m_plugin->IsDeviceConnected(m_index))
         m_valueText = L"连接中...";
@@ -101,13 +102,13 @@ const wchar_t* CPowerItem::GetItemValueText() const {
 // CTotalPowerItem 实现
 // ═══════════════════════════════════════════════
 const wchar_t* CTotalPowerItem::GetItemLableText() const {
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     m_labelText = cfg.showLabel ? L"总功率:" : L"";
     return m_labelText.c_str();
 }
 
 const wchar_t* CTotalPowerItem::GetItemValueText() const {
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     int n = m_plugin ? m_plugin->GetDeviceCount() : 0;
     bool any = false;
     double sum = 0;
@@ -157,13 +158,24 @@ void CMijiaPowerPlugin::LazyInit(const std::wstring& configDir) {
     auto& cm = ConfigManager::Instance();
     cm.SetConfigDir(configDir);
     cm.Load();
+    auto cfg = cm.Get();
 
-    // 迁移旧版（1.0）单设备历史文件到第1个设备的历史文件
+    // ── 历史文件迁移（均为“目标不存在才迁移”，可重复执行）──
+    // 1) v1.0：MijiaPower_history.json → 第 1 个设备的历史文件
     std::wstring newPath = cm.GetHistoryFilePath(0);
     std::wstring oldPath = cm.GetLegacyHistoryFilePath();
     if (GetFileAttributesW(newPath.c_str()) == INVALID_FILE_ATTRIBUTES &&
         GetFileAttributesW(oldPath.c_str()) != INVALID_FILE_ATTRIBUTES)
         MoveFileW(oldPath.c_str(), newPath.c_str());
+
+    // 2) v1.1.0/1.1.1：按索引命名的 MijiaPower_history_N.json → 按设备身份命名
+    for (int i = 0; i < (int)cfg.devices.size() && i < MAX_DEVICES; ++i) {
+        std::wstring newP = cm.GetHistoryFilePath(i);
+        std::wstring oldP = cm.GetIndexHistoryFilePath(i);
+        if (GetFileAttributesW(newP.c_str()) == INVALID_FILE_ATTRIBUTES &&
+            GetFileAttributesW(oldP.c_str()) != INVALID_FILE_ATTRIBUTES)
+            MoveFileW(oldP.c_str(), newP.c_str());
+    }
 
     InitDevices();
     StartSampling();
@@ -180,44 +192,49 @@ void CMijiaPowerPlugin::OnExtenedInfo(ExtendedInfoIndex index, const wchar_t* da
 }
 
 void CMijiaPowerPlugin::StartSampling() {
+    m_lastHistorySave = std::chrono::steady_clock::now();
     if (!m_sampleThread.joinable()) {
         m_sampleThread = std::thread(&CMijiaPowerPlugin::SampleLoop, this);
     }
 }
 
-// 按当前配置建立设备状态（含历史加载）
+// 按当前配置建立设备状态（含历史加载）。
+// 历史文件的加载在 m_devicesMutex 之外完成，最后仅短暂持锁换血
 void CMijiaPowerPlugin::InitDevices() {
     auto& cm = ConfigManager::Instance();
-    auto& cfg = cm.Get();
-    std::lock_guard<std::mutex> lock(m_devicesMutex);
-    m_devices.clear();
+    auto cfg = cm.Get();
+    std::vector<std::shared_ptr<DeviceState>> devs;
     for (int i = 0; i < (int)cfg.devices.size(); ++i) {
         auto st = std::make_shared<DeviceState>();
         st->cfg = cfg.devices[i];
         if (cfg.enableRecording)
             st->history.LoadFromFile(cm.GetHistoryFilePath(i));
-        m_devices.push_back(st);
+        devs.push_back(st);
     }
+    std::lock_guard<std::mutex> lock(m_devicesMutex);
+    m_devices.swap(devs);
 }
 
-// 设置变更后重建设备状态：同 IP+Token 的设备保留连接与历史，其余重建
+// 设置变更后重建设备状态：同 IP+Token 的设备保留连接与历史，其余重建。
+// 磁盘 I/O（历史加载/保存）全部在 m_devicesMutex 之外完成，
+// 最后仅短暂持锁换血，避免阻塞采样线程的 SnapshotDevices
 void CMijiaPowerPlugin::ApplyNewConfig() {
     auto& cm = ConfigManager::Instance();
-    auto& cfg = cm.Get();
-    std::lock_guard<std::mutex> lock(m_devicesMutex);
+    auto cfg = cm.Get();
+    auto oldDevs = SnapshotDevices();
 
-    std::vector<bool> used(m_devices.size(), false);
+    std::vector<bool> used(oldDevs.size(), false);
     std::vector<std::shared_ptr<DeviceState>> newDevs;
 
     for (int i = 0; i < (int)cfg.devices.size(); ++i) {
         const DeviceConfig& d = cfg.devices[i];
         int found = -1;
-        for (int j = 0; j < (int)m_devices.size(); ++j) {
-            if (!used[j] && m_devices[j]->cfg.SameAs(d)) { found = j; break; }
+        for (int j = 0; j < (int)oldDevs.size(); ++j) {
+            if (!used[j] && oldDevs[j]->cfg.SameAs(d)) { found = j; break; }
         }
         if (found >= 0) {
             used[found] = true;
-            auto st = m_devices[found];
+            auto st = oldDevs[found];
             {
                 std::lock_guard<std::mutex> l(st->mtx);
                 st->cfg = d;    // 名称等显示属性即时生效，连接保留
@@ -235,13 +252,21 @@ void CMijiaPowerPlugin::ApplyNewConfig() {
         }
     }
 
-    // 保存被移除设备的历史（按其旧索引）
+    // 保存被移除设备的历史（按其旧身份 IP 取路径，避免索引错位）
     if (cfg.enableRecording) {
-        for (int j = 0; j < (int)m_devices.size(); ++j) {
-            if (!used[j])
-                m_devices[j]->history.SaveToFile(cm.GetHistoryFilePath(j));
+        for (int j = 0; j < (int)oldDevs.size(); ++j) {
+            if (!used[j]) {
+                std::wstring oldIp;
+                {
+                    std::lock_guard<std::mutex> l(oldDevs[j]->mtx);
+                    oldIp = oldDevs[j]->cfg.ip;
+                }
+                oldDevs[j]->history.SaveToFile(cm.GetHistoryFilePathForIP(oldIp, j));
+            }
         }
     }
+
+    std::lock_guard<std::mutex> lock(m_devicesMutex);
     m_devices.swap(newDevs);
 }
 
@@ -250,19 +275,13 @@ std::vector<std::shared_ptr<DeviceState>> CMijiaPowerPlugin::SnapshotDevices() c
     return m_devices;
 }
 
-void CMijiaPowerPlugin::SaveStateHistory(DeviceState& st, int index) {
-    auto& cm = ConfigManager::Instance();
-    if (cm.Get().enableRecording)
-        st.history.SaveToFile(cm.GetHistoryFilePath(index));
-}
-
 // ─── 采集线程 ───
 void CMijiaPowerPlugin::SampleLoop() {
-    // 首次连接所有设备
+    // 首次连接所有设备（PollOne 对未连接设备执行连接）
     auto devs = SnapshotDevices();
     for (auto& st : devs) {
         if (m_stopFlag) break;
-        ConnectOne(*st);
+        PollOne(*st, ConfigManager::Instance().Get().enableRecording);
     }
 
     int elapsed = 0;
@@ -293,48 +312,50 @@ void CMijiaPowerPlugin::SampleLoop() {
     }
 }
 
-// 连接单个设备（须先持有 st.mtx）
-static void TryConnectLocked(DeviceState& st, bool enableRecording) {
-    if (st.cfg.ip.empty() || st.cfg.token.empty()) return;
+// ─── 采样线程对单台设备的一次轮询 ───
+// 注意：网络 I/O 不持有 st.mtx（该锁只保护 cfg 的短暂读写），
+// 否则设置对话框“确定”时的 ApplyNewConfig 会在主线程被网络超时阻塞。
+// st.device 仅由采样线程访问，无需加锁。
+void CMijiaPowerPlugin::PollOne(DeviceState& st, bool enableRecording) {
+    // 快照配置（短暂持锁）
+    DeviceConfig cfg;
+    {
+        std::lock_guard<std::mutex> lock(st.mtx);
+        cfg = st.cfg;
+    }
+    if (cfg.ip.empty() || cfg.token.empty()) return;
+
     char ip[256], token[256];
-    ToUtf8(st.cfg.ip, ip, 256);
-    ToUtf8(st.cfg.token, token, 256);
+    ToUtf8(cfg.ip, ip, 256);
+    ToUtf8(cfg.token, token, 256);
+
     try {
-        auto dev = std::make_unique<MiioDevice>(ip, token, 5000);
+        if (!st.device) {
+            // 首次连接 / 断线重连
+            auto dev = std::make_unique<MiioDevice>(ip, token, 5000);
+            double w = 0;
+            if (dev->GetPower(w)) {
+                st.device = std::move(dev);
+                st.connected = true;
+                st.watts = w;
+                if (enableRecording)
+                    st.history.AddSample(w);
+            }
+            return;
+        }
+        // 已连接，读取数据
         double w = 0;
-        if (dev->GetPower(w)) {
-            st.device = std::move(dev);
+        if (st.device->GetPower(w)) {
             st.connected = true;
             st.watts = w;
             if (enableRecording)
                 st.history.AddSample(w);
+        } else {
+            // 连接失效，丢弃连接对象，下轮重连
+            st.device.reset();
+            st.connected = false;
         }
-    } catch (...) {}
-}
-
-void CMijiaPowerPlugin::ConnectOne(DeviceState& st) {
-    std::lock_guard<std::mutex> lock(st.mtx);
-    if (st.device) return;
-    TryConnectLocked(st, ConfigManager::Instance().Get().enableRecording);
-}
-
-void CMijiaPowerPlugin::PollOne(DeviceState& st, bool enableRecording) {
-    std::lock_guard<std::mutex> lock(st.mtx);
-    if (!st.device) {
-        // 尝试重连
-        TryConnectLocked(st, enableRecording);
-        return;
-    }
-    // 已连接，读取数据
-    double w = 0;
-    if (st.device->GetPower(w)) {
-        st.connected = true;
-        st.watts = w;
-        if (enableRecording)
-            st.history.AddSample(w);
-    } else {
-        // 连接失效，重置
-        st.device.reset();
+    } catch (...) {
         st.connected = false;
     }
 }
@@ -356,32 +377,60 @@ double CMijiaPowerPlugin::GetDeviceWatts(int index) const {
     return devs[index]->watts.load();
 }
 
-double CMijiaPowerPlugin::GetTotalWatts() const {
-    auto devs = SnapshotDevices();
-    double sum = 0;
-    for (auto& st : devs)
-        if (st->connected.load()) sum += st->watts.load();
-    return sum;
+// 清除全部功率历史：先清内存（之后的周期保存只会写入空数据），
+// 再按模式删除配置目录内全部历史文件（含已移除设备遗留的 IP 命名文件与旧命名文件）
+void CMijiaPowerPlugin::ClearAllHistory() {
+    for (auto& st : SnapshotDevices())
+        st->history.Clear();
+    auto& cm = ConfigManager::Instance();
+    for (const auto& path : cm.GetAllHistoryFilePaths())
+        DeleteFileW(path.c_str());
 }
 
 // ─── ITMPlugin 接口 ───
 IPluginItem* CMijiaPowerPlugin::GetItem(int index) {
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     int n = (int)cfg.devices.size();
     if (index >= 0 && index < n) return &m_items[index];
     if (index == n && n > 1 && cfg.showTotal) return &m_totalItem;
     return nullptr;
 }
 
+// 历史落盘间隔（秒）。进程退出时采样线程会被直接终止、来不及保存，
+// 因此依赖 DataRequired（主程序定期调用、运行于主线程）周期性落盘
+static const int HISTORY_SAVE_INTERVAL_SEC = 60;
+
 void CMijiaPowerPlugin::DataRequired() {
-    // TrafficMonitor 定期调用此函数刷新数据
-    // 数据由后台线程持续更新，无需在此处理
-    // 但如果配置目录还未通过 OnExtenedInfo 传来，尝试用当前目录初始化（兼容性）
     if (!m_initialized) {
+        // 主程序未通过 OnExtenedInfo(EI_CONFIG_DIR) 传入配置目录时的兜底：
+        // 优先用主程序接口（m_pTM 非空说明主程序支持 API v7，虚表完整），
+        // 最后才退回当前工作目录
+        std::wstring dir;
+        if (m_pTM) {
+            const wchar_t* d = m_pTM->GetPluginConfigDir();
+            if (d && d[0]) dir = d;
+        }
+        if (dir.empty()) {
+            wchar_t buf[MAX_PATH];
+            GetCurrentDirectoryW(MAX_PATH, buf);
+            dir = buf;
+        }
         m_initialized = true;
-        wchar_t buf[MAX_PATH];
-        GetCurrentDirectoryW(MAX_PATH, buf);
-        LazyInit(buf);
+        LazyInit(dir);
+        return;
+    }
+
+    // 周期性保存功率历史
+    auto& cm = ConfigManager::Instance();
+    if (cm.Get().enableRecording) {
+        auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::seconds>(
+                now - m_lastHistorySave).count() >= HISTORY_SAVE_INTERVAL_SEC) {
+            m_lastHistorySave = now;
+            auto devs = SnapshotDevices();
+            for (int i = 0; i < (int)devs.size(); ++i)
+                devs[i]->history.SaveToFile(cm.GetHistoryFilePath(i));
+        }
     }
 }
 
@@ -392,14 +441,14 @@ const wchar_t* CMijiaPowerPlugin::GetInfo(PluginInfoIndex index) {
     case TMI_AUTHOR:      return L"MijiaPlug";
     case TMI_COPYRIGHT:   return L"2024 MijiaPlug";
     case TMI_URL:         return L"";
-    case TMI_VERSION:     return L"1.1.1";
+    case TMI_VERSION:     return L"1.1.3";
     default:              return L"";
     }
 }
 
 ITMPlugin::OptionReturn CMijiaPowerPlugin::ShowOptionsDialog(void* hParent) {
     int oldCount = (int)ConfigManager::Instance().Get().devices.size();
-    bool changed = COptionsDlg::Show((HWND)hParent);
+    bool changed = COptionsDlg::Show((HWND)hParent, this);
     if (changed) {
         // 配置已更新：同 IP+Token 的设备保留连接与历史，其余重建
         ApplyNewConfig();
@@ -418,7 +467,7 @@ ITMPlugin::OptionReturn CMijiaPowerPlugin::ShowOptionsDialog(void* hParent) {
 
 const wchar_t* CMijiaPowerPlugin::GetTooltipInfo() {
     // 与 v1.0 相同的详细样式：每个插座显示当前功率和 10分钟/1小时/24小时 统计
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     auto devs = SnapshotDevices();
 
     std::wostringstream oss;

@@ -188,7 +188,6 @@ static const unsigned int Rcon[11] = {
     0x10000000,0x20000000,0x40000000,0x80000000,0x1b000000,0x36000000
 };
 
-static unsigned char xtime(unsigned char x) { return ((x << 1) ^ (x & 0x80 ? 0x1b : 0)); }
 static unsigned char gmul(unsigned char a, unsigned char b) {
     unsigned char p = 0;
     for (int i = 0; i < 8; i++) {
@@ -294,6 +293,7 @@ static void BlockDecrypt(AESCtx* ctx, unsigned char in[16], unsigned char out[16
 bool Encrypt(const unsigned char key[16], const unsigned char iv[16],
              const unsigned char* plaintext, size_t plainLen,
              std::vector<unsigned char>& ciphertext) {
+    if (!plaintext || plainLen == 0 || plainLen > (16u << 20)) return false;   // 上限 16MB，防异常输入
     // PKCS7 padding
     size_t padLen  = 16 - (plainLen % 16);
     size_t totalLen = plainLen + padLen;
@@ -330,10 +330,14 @@ bool Decrypt(const unsigned char key[16], const unsigned char iv[16],
         for (int j = 0; j < 16; j++) plaintext[i+j] = block[j] ^ prev[j];
         memcpy(prev, ciphertext + i, 16);
     }
-    // 去 PKCS7 padding
+    // 去 PKCS7 padding：校验全部填充字节一致后才裁剪；
+    // 末字节不在 1~16 范围内（如部分固件的 0 填充）则不裁剪，交给上层去尾部 \0
     if (!plaintext.empty()) {
         unsigned char padLen = plaintext.back();
         if (padLen > 0 && padLen <= 16 && padLen <= plaintext.size()) {
+            for (size_t k = plaintext.size() - padLen; k < plaintext.size(); ++k) {
+                if (plaintext[k] != padLen) return false;   // 填充不一致 = 数据已损坏
+            }
             plaintext.resize(plaintext.size() - padLen);
         }
     }
@@ -364,9 +368,14 @@ static unsigned int ReadBE32(const unsigned char* p) { return ((unsigned int)p[0
 
 MiioDevice::MiioDevice(const std::string& ip, const std::string& token, int timeoutMs)
     : m_ip(ip), m_timeoutMs(timeoutMs), m_handshaked(false) {
-    // token hex -> bytes
+    // 网络栈初始化（引用计数，与析构中的 WSACleanup 配对；
+    // 不在每次收发时重复调用）
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2,2), &wsaData);
+
+    // token hex -> bytes（非法 token 时 m_tokenValid=false，后续请求直接失败）
     memset(m_token, 0, 16);
-    HexToBytes(token, m_token, 16);
+    m_tokenValid = HexToBytes(token, m_token, 16);
     // key = MD5(token)
     MiioMD5::Compute(m_token, 16, m_key);
     // iv = MD5(key + token)
@@ -374,6 +383,10 @@ MiioDevice::MiioDevice(const std::string& ip, const std::string& token, int time
     memcpy(keyToken,    m_key,   16);
     memcpy(keyToken+16, m_token, 16);
     MiioMD5::Compute(keyToken, 32, m_iv);
+}
+
+MiioDevice::~MiioDevice() {
+    WSACleanup();
 }
 
 unsigned int MiioDevice::CurrentStamp() const {
@@ -384,9 +397,6 @@ unsigned int MiioDevice::CurrentStamp() const {
 
 bool MiioDevice::UdpSendRecv(const std::vector<unsigned char>& sendBuf,
                               std::vector<unsigned char>& recvBuf, int recvMax) {
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2,2), &wsaData);
-
     SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock == INVALID_SOCKET) return false;
 
@@ -396,10 +406,22 @@ bool MiioDevice::UdpSendRecv(const std::vector<unsigned char>& sendBuf,
 
     sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port   = htons(54321);
-    inet_pton(AF_INET, m_ip.c_str(), &addr.sin_addr);
+    addr.sin_port   = htons(PORT);
+    if (inet_pton(AF_INET, m_ip.c_str(), &addr.sin_addr) != 1) {
+        closesocket(sock);
+        return false;
+    }
+    // connect 后内核只投递来自该设备地址与端口的响应，
+    // 过滤局域网内其他主机伪造的 UDP 包
+    if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
+        closesocket(sock);
+        return false;
+    }
 
-    sendto(sock, (char*)sendBuf.data(), (int)sendBuf.size(), 0, (sockaddr*)&addr, sizeof(addr));
+    if (send(sock, (char*)sendBuf.data(), (int)sendBuf.size(), 0) < 0) {
+        closesocket(sock);
+        return false;
+    }
 
     recvBuf.resize(recvMax);
     int n = recv(sock, (char*)recvBuf.data(), recvMax, 0);
@@ -420,7 +442,8 @@ bool MiioDevice::Handshake() {
     std::vector<unsigned char> req(HELLO, HELLO+32);
     std::vector<unsigned char> resp;
     if (!UdpSendRecv(req, resp)) return false;
-    if (resp.size() < 32) return false;
+    // 校验应答长度与魔数
+    if (resp.size() != 32 || resp[0] != 0x21 || resp[1] != 0x31) return false;
 
     m_deviceId    = ReadBE32(resp.data() + 8);
     m_serverStamp = ReadBE32(resp.data() + 12);
@@ -479,11 +502,25 @@ std::vector<unsigned char> MiioDevice::BuildPacket(const std::string& payloadJso
 
 std::string MiioDevice::ParsePacket(const std::vector<unsigned char>& data) {
     if (data.size() <= 32) return "";
+    // 校验魔数与设备 ID
+    if (data[0] != 0x21 || data[1] != 0x31) return "";
+    if (ReadBE32(data.data() + 8) != m_deviceId) return "";
+    // 校验 checksum = MD5(header + token + payload)
+    std::vector<unsigned char> checksumBuf;
+    checksumBuf.reserve(data.size());
+    checksumBuf.insert(checksumBuf.end(), data.begin(), data.begin() + 16);
+    checksumBuf.insert(checksumBuf.end(), m_token, m_token + 16);
+    checksumBuf.insert(checksumBuf.end(), data.begin() + 32, data.end());
+    unsigned char calc[16];
+    MiioMD5::Compute(checksumBuf.data(), checksumBuf.size(), calc);
+    if (memcmp(calc, data.data() + 16, 16) != 0) return "";
+
     std::vector<unsigned char> payloadEnc(data.begin()+32, data.end());
     return Decrypt(payloadEnc);
 }
 
 bool MiioDevice::Send(const std::string& method, const std::string& paramsJson, std::string& outResult) {
+    if (!m_tokenValid) return false;    // 非法 token：密钥必错，直接失败，不产生网络流量
     if (!m_handshaked) {
         if (!Handshake()) return false;
     }
@@ -500,8 +537,9 @@ bool MiioDevice::Send(const std::string& method, const std::string& paramsJson, 
     std::string respJson = ParsePacket(resp);
     if (respJson.empty()) return false;
 
-    // 简单解析 "result" 字段
-    // 找到 "result": 后面的内容
+    // 解析 "result" 字段：取其后到末尾的内容并剥掉一个尾部 '}'。
+    // 约定：错误响应（无 "result" 字段）时返回整个 JSON 且返回 true，
+    // 由调用方按找不到期望字段（如 "value":）处理
     auto pos = respJson.find("\"result\":");
     if (pos == std::string::npos) {
         // 可能是错误，返回整个响应
@@ -529,8 +567,16 @@ bool MiioDevice::GetPower(double& outWatts) {
     pos += 8;
     while (pos < result.size() && (result[pos]==' ' || result[pos]=='\t')) pos++;
     double val = 0.0;
-    try { val = std::stod(result.substr(pos)); }
-    catch (...) { return false; }
+    if (pos < result.size() && result[pos] == '"') {
+        // 部分固件把属性值返回为字符串（"value":"23.4"）
+        auto end = result.find('"', pos + 1);
+        if (end == std::string::npos) return false;
+        try { val = std::stod(result.substr(pos + 1, end - pos - 1)); }
+        catch (...) { return false; }
+    } else {
+        try { val = std::stod(result.substr(pos)); }
+        catch (...) { return false; }
+    }
     outWatts = val;
     return true;
 }

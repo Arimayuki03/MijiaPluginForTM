@@ -17,3 +17,7 @@
 #define IDC_BTN_CLEARHISTORY  1012
 #define IDC_BTN_OK            1013
 #define IDC_BTN_CANCEL        1014
+#define IDC_LIST_DEVICES      1016
+#define IDC_BTN_ADDDEV        1017
+#define IDC_BTN_DELDEV        1018
+#define IDC_CHECK_TOTAL       1019

@@ -28,25 +28,12 @@ namespace MiioAES {
 }
 
 // ─── miIO 设备类 ───
-struct MiioDeviceConfig {
-    std::wstring ip;
-    std::wstring token;
-    std::wstring name;
-    std::wstring model;
-    bool autoConnect = false;
-};
-
-struct MiioProperty {
-    int siid;
-    int piid;
-};
-
 class MiioDevice {
 public:
     static const int PORT = 54321;
 
     explicit MiioDevice(const std::string& ip, const std::string& token, int timeoutMs = 5000);
-    ~MiioDevice() = default;
+    ~MiioDevice();
 
     bool Handshake();
     bool IsHandshaked() const { return m_handshaked; }
@@ -60,6 +47,7 @@ public:
 private:
     std::string  m_ip;
     unsigned char m_token[16];
+    bool         m_tokenValid = false;  // token 是否为合法的 32 位十六进制
     int          m_timeoutMs;
     unsigned char m_key[16];
     unsigned char m_iv[16];

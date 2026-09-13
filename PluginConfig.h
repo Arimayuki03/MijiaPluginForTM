@@ -3,7 +3,17 @@
 #include "pch.h"
 
 // 最大支持设备数（与显示项一一对应，设置对话框同样受此限制）
-static const int MAX_DEVICES = 8;
+inline constexpr int MAX_DEVICES = 8;
+
+// Token 格式校验：32 位十六进制（设置对话框与任务栏显示共用）
+inline bool IsValidToken(const std::wstring& token) {
+    if (token.size() != 32) return false;
+    for (wchar_t c : token) {
+        bool hex = (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+        if (!hex) return false;
+    }
+    return true;
+}
 
 struct DeviceConfig {
     std::wstring ip;
@@ -40,15 +50,28 @@ public:
     void  Load();
     void  Save() const;
 
-    PluginConfig& Get() { return m_cfg; }
-    const PluginConfig& Get() const { return m_cfg; }
+    // 配置对象同时被 UI 线程（设置对话框写）与采集线程（采样循环读）访问，
+    // 统一通过副本读写，避免数据竞争
+    PluginConfig Get() const;
+    void         Set(const PluginConfig& cfg);
 
-    // 第 index（0起）个设备的历史文件路径；旧版单设备历史文件路径
+    // 第 index（0起）个设备的历史文件路径。
+    // 按设备身份（IP）命名，设备增删/重排后仍指向同一文件，不会错位；
+    // IP 为空（未配置设备）时退回按索引命名
     std::wstring GetHistoryFilePath(int index) const;
+    // 指定 IP 的历史文件路径（供配置变更时按旧身份保存被移除设备）
+    std::wstring GetHistoryFilePathForIP(const std::wstring& ip, int index) const;
+    // v1.1.0/1.1.1 按索引命名的旧历史文件路径（仅用于迁移与清理）
+    std::wstring GetIndexHistoryFilePath(int index) const;
+    // v1.0 单设备历史文件路径
     std::wstring GetLegacyHistoryFilePath() const;
+    // 配置目录内全部历史文件路径（按 MijiaPower_history*.json 模式枚举，
+    // 覆盖 IP 命名、索引命名与 v1.0 命名，含已删除设备遗留的文件）
+    std::vector<std::wstring> GetAllHistoryFilePaths() const;
 
 private:
     std::wstring  m_dir;
+    mutable std::mutex m_mutex;
     PluginConfig  m_cfg;
     std::wstring  IniPath() const;
 

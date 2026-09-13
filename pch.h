@@ -29,5 +29,5 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "comctl32.lib")
 
-#define TRAFFICE_MONITOR_PLUGIN
+#define TRAFFIC_MONITOR_PLUGIN
 #include "PluginInterface.h"

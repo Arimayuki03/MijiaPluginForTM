@@ -13,12 +13,12 @@ std::wstring FormatWatts(double watts, int decimalPlaces, bool showUnit);
 // 单个设备的运行时状态（连接、功率、历史）
 // ─────────────────────────────────────────────
 struct DeviceState {
-    DeviceConfig                cfg;                 // 该设备的配置快照（采集线程专用，受 mtx 保护）
-    std::unique_ptr<MiioDevice> device;              // miIO 连接（mtx 保护）
-    PowerHistory                history;             // 每设备独立历史
+    DeviceConfig                cfg;                 // 该设备的配置快照（mtx 保护）
+    std::unique_ptr<MiioDevice> device;              // miIO 连接（仅采样线程访问，无需加锁）
+    PowerHistory                history;             // 每设备独立历史（内部自带锁）
     std::atomic<bool>           connected{ false };
     std::atomic<double>         watts{ 0.0 };
-    std::mutex                  mtx;
+    std::mutex                  mtx;                 // 仅保护 cfg 的读写；网络 I/O 不持此锁
 };
 
 // ─────────────────────────────────────────────
@@ -100,7 +100,9 @@ public:
     int    GetDeviceCount() const;
     bool   IsDeviceConnected(int index) const;
     double GetDeviceWatts(int index) const;
-    double GetTotalWatts() const;          // 所有已连接设备功率之和
+
+    // 清除全部功率历史（内存 + 磁盘，含旧命名文件），供设置对话框“清除历史”调用
+    void   ClearAllHistory();
 
 private:
     ITrafficMonitor* m_pTM = nullptr;
@@ -115,6 +117,9 @@ private:
     std::thread        m_sampleThread;
     std::atomic<bool>  m_stopFlag{ false };
 
+    // 上次历史落盘时间（DataRequired 周期保存的节流）
+    std::chrono::steady_clock::time_point m_lastHistorySave{};
+
     // tooltip缓存
     mutable std::wstring m_tooltipText;
 
@@ -125,10 +130,8 @@ private:
     void LazyInit(const std::wstring& configDir);  // 加载配置并启动采集（兼容新旧主程序）
     void InitDevices();                    // 按当前配置建立设备状态（含历史加载）
     void ApplyNewConfig();                 // 设置变更后重建设备状态（复用同 IP+Token 的连接与历史）
-    void SaveStateHistory(DeviceState& st, int index);
 
     std::vector<std::shared_ptr<DeviceState>> SnapshotDevices() const;
-    static void ConnectOne(DeviceState& st);
     static void PollOne(DeviceState& st, bool enableRecording);
 };
 

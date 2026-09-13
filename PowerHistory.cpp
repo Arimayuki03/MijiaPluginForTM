@@ -12,6 +12,13 @@ double PowerHistory::Now() {
 
 PowerHistory::PowerHistory() = default;
 
+void PowerHistory::Clear() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_realtime.clear();
+    m_longterm.clear();
+    m_lastMinTs = 0.0;
+}
+
 void PowerHistory::AddSample(double watts) {
     std::lock_guard<std::mutex> lock(m_mutex);
     double ts = Now();

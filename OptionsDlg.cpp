@@ -3,38 +3,12 @@
 #include "OptionsDlg.h"
 #include "PluginConfig.h"
 #include "MiioDevice.h"
+#include "MijiaPowerPlugin.h"
 #include <commctrl.h>
 #include <string>
 #include <sstream>
 
-// 控件 ID（不与 Windows SDK 宏冲突）
-#define IDC_EDIT_IP           1001
-#define IDC_EDIT_TOKEN        1002
-#define IDC_EDIT_NAME         1003
-#define IDC_EDIT_INTERVAL     1004
-#define IDC_CHECK_RECORD      1005
-#define IDC_CHECK_LABEL       1006
-#define IDC_CHECK_UNIT        1007
-#define IDC_COMBO_DECIMAL     1008
-#define IDC_STATIC_STATUS     1009
-#define IDC_BTN_TEST          1010
-#define IDC_STATIC_HISTORY    1011
-#define IDC_BTN_CLEARHISTORY  1012
-#define IDC_BTN_OK            1013
-#define IDC_BTN_CANCEL        1014
-#define IDC_SCROLL_CONTAINER  1015
-#define IDC_LIST_DEVICES      1016
-#define IDC_BTN_ADDDEV        1017
-#define IDC_BTN_DELDEV        1018
-#define IDC_CHECK_TOTAL       1019
-
-// ─── 辅助：添加控件 ───
-static HWND AddCtrl(HWND parent, LPCWSTR cls, LPCWSTR text, DWORD style,
-                    int x, int y, int w, int h, int id) {
-    return CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style,
-                           x, y, w, h, parent, (HMENU)(intptr_t)id,
-                           (HINSTANCE)GetWindowLongPtrW(parent, GWLP_HINSTANCE), NULL);
-}
+// 控件 ID 统一定义在 resource.h（OptionsDlg.h 已包含），此处不再重复
 
 // ─── 对话框状态（每次 Show 调用使用局部结构体传递） ───
 struct DlgState {
@@ -42,6 +16,8 @@ struct DlgState {
     bool closed = false;
     std::vector<DeviceConfig> devices;   // 设备工作副本，确定时写回配置
     int curSel = -1;                     // 当前选中的设备索引
+    HFONT hFont = nullptr;               // 对话框字体（关闭时销毁）
+    CMijiaPowerPlugin* plugin = nullptr; // “清除历史”时同步清理内存数据
     HWND hList = nullptr;
     HWND hEditIp = nullptr, hEditToken = nullptr, hEditName = nullptr, hEditInterval = nullptr;
     HWND hCheckRecord = nullptr, hCheckLabel = nullptr, hCheckUnit = nullptr, hCheckTotal = nullptr;
@@ -96,7 +72,8 @@ static void CreateControls(HWND hWnd, DlgState* st) {
     lf.lfHeight = -14;
     lf.lfWeight = FW_NORMAL;
     lstrcpynW(lf.lfFaceName, L"微软雅黑", LF_FACESIZE);
-    HFONT hFont = CreateFontIndirectW(&lf);
+    st->hFont = CreateFontIndirectW(&lf);
+    HFONT hFont = st->hFont;
     if (!hFont) hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
 
     auto addCtrl = [&](LPCWSTR cls, LPCWSTR text, DWORD style,
@@ -109,38 +86,38 @@ static void CreateControls(HWND hWnd, DlgState* st) {
 
     // ─── 设备列表分组 ───
     addCtrl(L"BUTTON", L"设备列表（米家插座，最多8个）", BS_GROUPBOX, 10, 8, 530, 116, 0);
-    st->hList = addCtrl(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | LBS_NOTIFY | LBS_HASSTRINGS,
+    st->hList = addCtrl(L"LISTBOX", L"", WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY | LBS_HASSTRINGS,
                         24, 26, 320, 86, IDC_LIST_DEVICES);
-    st->hBtnAdd = addCtrl(L"BUTTON", L"添加设备", BS_PUSHBUTTON, 352, 26, 150, 26, IDC_BTN_ADDDEV);
-    st->hBtnDel = addCtrl(L"BUTTON", L"删除选中设备", BS_PUSHBUTTON, 352, 58, 150, 26, IDC_BTN_DELDEV);
+    st->hBtnAdd = addCtrl(L"BUTTON", L"添加设备", BS_PUSHBUTTON | WS_TABSTOP, 352, 26, 150, 26, IDC_BTN_ADDDEV);
+    st->hBtnDel = addCtrl(L"BUTTON", L"删除选中设备", BS_PUSHBUTTON | WS_TABSTOP, 352, 58, 150, 26, IDC_BTN_DELDEV);
 
     // ─── 设备设置分组 ───
     addCtrl(L"BUTTON", L"选中设备设置", BS_GROUPBOX, 10, 128, 530, 164, 0);
     addCtrl(L"STATIC", L"名称:", 0, 24, 148, 48, 20, 0);
-    st->hEditName = addCtrl(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 76, 146, 150, 24, IDC_EDIT_NAME);
+    st->hEditName = addCtrl(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 76, 146, 150, 24, IDC_EDIT_NAME);
 
     addCtrl(L"STATIC", L"设备 IP:", 0, 240, 148, 60, 20, 0);
-    st->hEditIp = addCtrl(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 306, 146, 210, 24, IDC_EDIT_IP);
+    st->hEditIp = addCtrl(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 306, 146, 210, 24, IDC_EDIT_IP);
 
     addCtrl(L"STATIC", L"Token:", 0, 24, 175, 48, 20, 0);
-    st->hEditToken = addCtrl(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL, 76, 173, 440, 24, IDC_EDIT_TOKEN);
+    st->hEditToken = addCtrl(L"EDIT", L"", WS_BORDER | WS_TABSTOP | ES_AUTOHSCROLL, 76, 173, 440, 24, IDC_EDIT_TOKEN);
 
-    st->hBtnTest = addCtrl(L"BUTTON", L"测试连接", BS_PUSHBUTTON, 76, 204, 90, 26, IDC_BTN_TEST);
+    st->hBtnTest = addCtrl(L"BUTTON", L"测试连接", BS_PUSHBUTTON | WS_TABSTOP, 76, 204, 90, 26, IDC_BTN_TEST);
     st->hStaticStatus = addCtrl(L"STATIC", L"", SS_LEFT, 176, 207, 330, 20, IDC_STATIC_STATUS);
 
     // ─── 插件选项分组 ───
     addCtrl(L"BUTTON", L"插件选项", BS_GROUPBOX, 10, 296, 530, 124, 0);
-    st->hCheckRecord = addCtrl(L"BUTTON", L"启用功率历史记录", BS_AUTOCHECKBOX, 24, 314, 180, 20, IDC_CHECK_RECORD);
-    st->hCheckLabel  = addCtrl(L"BUTTON", L"显示设备名称标签", BS_AUTOCHECKBOX, 240, 314, 180, 20, IDC_CHECK_LABEL);
-    st->hCheckUnit   = addCtrl(L"BUTTON", L"显示 W 单位",   BS_AUTOCHECKBOX, 24, 338, 180, 20, IDC_CHECK_UNIT);
-    st->hCheckTotal  = addCtrl(L"BUTTON", L"显示总功率项（多设备合计）", BS_AUTOCHECKBOX, 240, 338, 250, 20, IDC_CHECK_TOTAL);
+    st->hCheckRecord = addCtrl(L"BUTTON", L"启用功率历史记录", BS_AUTOCHECKBOX | WS_TABSTOP, 24, 314, 180, 20, IDC_CHECK_RECORD);
+    st->hCheckLabel  = addCtrl(L"BUTTON", L"显示设备名称标签", BS_AUTOCHECKBOX | WS_TABSTOP, 240, 314, 180, 20, IDC_CHECK_LABEL);
+    st->hCheckUnit   = addCtrl(L"BUTTON", L"显示 W 单位",   BS_AUTOCHECKBOX | WS_TABSTOP, 24, 338, 180, 20, IDC_CHECK_UNIT);
+    st->hCheckTotal  = addCtrl(L"BUTTON", L"显示总功率项（多设备合计）", BS_AUTOCHECKBOX | WS_TABSTOP, 240, 338, 250, 20, IDC_CHECK_TOTAL);
 
     addCtrl(L"STATIC", L"采集间隔（秒）:", 0, 24, 366, 120, 20, 0);
-    st->hEditInterval = addCtrl(L"EDIT", L"3", WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+    st->hEditInterval = addCtrl(L"EDIT", L"3", WS_BORDER | WS_TABSTOP | ES_NUMBER | ES_AUTOHSCROLL,
                                 148, 364, 60, 24, IDC_EDIT_INTERVAL);
 
     addCtrl(L"STATIC", L"小数位数:", 0, 240, 366, 80, 20, 0);
-    st->hComboDecimal = addCtrl(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL,
+    st->hComboDecimal = addCtrl(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                                 324, 364, 90, 80, IDC_COMBO_DECIMAL);
     SendMessageW(st->hComboDecimal, CB_ADDSTRING, 0, (LPARAM)L"0位");
     SendMessageW(st->hComboDecimal, CB_ADDSTRING, 0, (LPARAM)L"1位");
@@ -148,16 +125,16 @@ static void CreateControls(HWND hWnd, DlgState* st) {
 
     // ─── 历史数据分组 ───
     addCtrl(L"BUTTON", L"历史数据", BS_GROUPBOX, 10, 424, 530, 52, 0);
-    addCtrl(L"STATIC", L"每个插座的功率历史保存在配置目录 MijiaPower_history_N.json 中",
+    addCtrl(L"STATIC", L"历史按设备 IP 保存为 MijiaPower_history_<IP>.json（配置目录内）",
             SS_LEFT | SS_WORDELLIPSIS, 24, 444, 300, 26, IDC_STATIC_HISTORY);
-    st->hBtnClearHistory = addCtrl(L"BUTTON", L"清除历史", BS_PUSHBUTTON, 352, 438, 150, 26, IDC_BTN_CLEARHISTORY);
+    st->hBtnClearHistory = addCtrl(L"BUTTON", L"清除历史", BS_PUSHBUTTON | WS_TABSTOP, 352, 438, 150, 26, IDC_BTN_CLEARHISTORY);
 
     // ─── 底部按钮 ───
-    addCtrl(L"BUTTON", L"确定", BS_DEFPUSHBUTTON, 330, 488, 90, 28, IDC_BTN_OK);
-    addCtrl(L"BUTTON", L"取消", BS_PUSHBUTTON,    430, 488, 90, 28, IDC_BTN_CANCEL);
+    addCtrl(L"BUTTON", L"确定", BS_DEFPUSHBUTTON | WS_TABSTOP, 330, 488, 90, 28, IDC_BTN_OK);
+    addCtrl(L"BUTTON", L"取消", BS_PUSHBUTTON | WS_TABSTOP,    430, 488, 90, 28, IDC_BTN_CANCEL);
 
     // ─── 填充现有配置 ───
-    auto& cfg = ConfigManager::Instance().Get();
+    auto cfg = ConfigManager::Instance().Get();
     st->devices = cfg.devices;
     if (st->devices.empty()) st->devices.push_back(DeviceConfig{});
     st->curSel = 0;
@@ -180,7 +157,8 @@ static void CreateControls(HWND hWnd, DlgState* st) {
 }
 
 static bool SaveFromDialog(DlgState* st) {
-    auto& cfg = ConfigManager::Instance().Get();
+    // 在副本上修改，再经 Set() 加锁写回（配置对象同时被采集线程读取）
+    PluginConfig cfg = ConfigManager::Instance().Get();
     wchar_t buf[512];
 
     CaptureFieldsToWorking(st);
@@ -198,6 +176,7 @@ static bool SaveFromDialog(DlgState* st) {
     cfg.decimalPlaces   = (int)SendMessageW(st->hComboDecimal, CB_GETCURSEL, 0, 0);
     if (cfg.decimalPlaces < 0) cfg.decimalPlaces = 1;
 
+    ConfigManager::Instance().Set(cfg);
     ConfigManager::Instance().Save();
     return true;
 }
@@ -269,6 +248,10 @@ static LRESULT CALLBACK DlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
                 SetWindowTextW(st->hStaticStatus, L"请填写 IP 和 Token");
                 break;
             }
+            if (!IsValidToken(tokenBuf)) {
+                SetWindowTextW(st->hStaticStatus, L"Token 格式错误：应为 32 位十六进制字符串");
+                break;
+            }
             SetWindowTextW(st->hStaticStatus, L"正在连接...");
             UpdateWindow(hWnd);
 
@@ -292,10 +275,15 @@ static LRESULT CALLBACK DlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
         } else if (id == IDC_BTN_CLEARHISTORY) {
             if (MessageBoxW(hWnd, L"确定要清除所有设备的功率历史记录吗？此操作不可撤销。",
                             L"确认", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-                auto& cm = ConfigManager::Instance();
-                for (int i = 0; i < MAX_DEVICES; ++i)
-                    DeleteFileW(cm.GetHistoryFilePath(i).c_str());
-                DeleteFileW(cm.GetLegacyHistoryFilePath().c_str());
+                if (st->plugin) {
+                    // 内存与磁盘一起清，避免采样线程稍后把旧数据写回文件
+                    st->plugin->ClearAllHistory();
+                } else {
+                    // 无插件实例（理论上不会发生）：退化为只删文件（含已移除设备遗留的文件）
+                    auto& cm = ConfigManager::Instance();
+                    for (const auto& path : cm.GetAllHistoryFilePaths())
+                        DeleteFileW(path.c_str());
+                }
                 SetWindowTextW(st->hStaticStatus, L"历史记录已清除");
             }
         }
@@ -314,7 +302,7 @@ static LRESULT CALLBACK DlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
     return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
-// ─── 窗口类注册（线程安全，只注册一次）───
+// ─── 窗口类注册（仅主线程调用；只注册一次）───
 static ATOM RegisterDlgClass(HINSTANCE hInst) {
     static ATOM atom = 0;
     if (atom == 0) {
@@ -332,7 +320,7 @@ static ATOM RegisterDlgClass(HINSTANCE hInst) {
 }
 
 // ─── 显示对话框（模态，不破坏主消息循环）───
-bool COptionsDlg::Show(HWND hParent) {
+bool COptionsDlg::Show(HWND hParent, CMijiaPowerPlugin* plugin) {
     HINSTANCE hInst = hParent
         ? (HINSTANCE)GetWindowLongPtrW(hParent, GWLP_HINSTANCE)
         : GetModuleHandleW(NULL);
@@ -340,6 +328,7 @@ bool COptionsDlg::Show(HWND hParent) {
     RegisterDlgClass(hInst);
 
     DlgState state;
+    state.plugin = plugin;
 
     // 固定客户区尺寸（紧凑布局，与 v1.0 密度一致，不随 DPI 放大），
     // 用 AdjustWindowRectEx 反推外框尺寸，保证标题栏不挤占客户区
@@ -387,6 +376,10 @@ bool COptionsDlg::Show(HWND hParent) {
 
     // 如果窗口还活着（用户关闭了消息循环之外），强制销毁
     if (IsWindow(hDlg)) DestroyWindow(hDlg);
+
+    // 销毁对话框字体（兜底的 stock 字体除外，不应删除）
+    if (state.hFont && state.hFont != (HFONT)GetStockObject(DEFAULT_GUI_FONT))
+        DeleteObject(state.hFont);
 
     // 恢复父窗口
     if (hParent) {

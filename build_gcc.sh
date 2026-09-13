@@ -4,9 +4,10 @@
 set -e
 cd "$(dirname "$0")"
 
-GXX="/c/Users/Arima/AppData/Local/Microsoft/WinGet/Packages/BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe/mingw64/bin/g++.exe"
-if [ ! -f "$GXX" ]; then
-    GXX=$(find "/c/Users/Arima/AppData/Local/Microsoft/WinGet/Packages" -maxdepth 4 -name "g++.exe" 2>/dev/null | head -1)
+GXX="$(command -v g++ 2>/dev/null || true)"
+if [ -z "$GXX" ]; then
+    # PATH 中没有 g++ 时，在 WinGet 安装目录中查找（WinLibs 工具链）
+    GXX=$(find "/c/Users/${USERNAME}/AppData/Local/Microsoft/WinGet/Packages" -maxdepth 4 -name "g++.exe" 2>/dev/null | head -1)
 fi
 [ -z "$GXX" ] && { echo "未找到 g++.exe"; exit 1; }
 

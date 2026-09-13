@@ -18,7 +18,7 @@ struct PowerStats {
 
 class PowerHistory {
 public:
-    static const size_t MAX_REALTIME = 300;   // 最近5分钟（2秒一次=150，取300富裕）
+    static const size_t MAX_REALTIME = 600;   // 最近10分钟（1秒一次）；3秒间隔下覆盖30分钟
     static const size_t MAX_LONG     = 10080; // 7天（1分钟一次）
 
     PowerHistory();
@@ -26,6 +26,9 @@ public:
 
     // 添加一个实时采样点
     void AddSample(double watts);
+
+    // 清空全部历史（内存）；供“清除历史”使用，避免旧数据之后被写回文件
+    void Clear();
 
     // 最近 N 秒的实时样本
     std::vector<PowerSample> GetRecentSamples(int seconds = 600) const;
