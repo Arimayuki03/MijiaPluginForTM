@@ -3,7 +3,7 @@
 ## 简介
 
 这是一个 TrafficMonitor 插件，可以在 Windows 任务栏实时显示米家/酷控（cuco）智能插座的功率数值，并可选开启功率历史记录功能。
-<img width="533" height="598" alt="插件截图" src="https://github.com/user-attachments/assets/90fd0cb1-d807-4bc9-a64a-b7a10b8ae9c9" />
+<img width="552" alt="米家插座功率插件设置界面" src="插件截图.png" />
 
 
 
@@ -155,7 +155,7 @@ python -m miio.extract_tokens
 4. 点击 **测试连接** 验证
 5. 点击 **确定** 保存
 
-![插件配置界面](image.png)
+![插件配置界面](插件截图.png)
 
 ### 配置选项说明
 
