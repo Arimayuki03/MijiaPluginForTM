@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include "PluginInterface.h"
 int main(int argc, char**) {
+    SetProcessDPIAware();   // 高 DPI 下按原生像素渲染，避免系统拉伸模糊（供截图与人工验证）
     int argcW = 0;
     LPWSTR* argvW = CommandLineToArgvW(GetCommandLineW(), &argcW);
     if (argcW < 3) { printf("usage: test_dialog <dll> <configdir>\n"); return 1; }

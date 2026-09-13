@@ -125,7 +125,7 @@ static void CreateControls(HWND hWnd, DlgState* st) {
 
     // ─── 历史数据分组 ───
     addCtrl(L"BUTTON", L"历史数据", BS_GROUPBOX, 10, 424, 530, 52, 0);
-    addCtrl(L"STATIC", L"历史按设备 IP 保存为 MijiaPower_history_<IP>.json（配置目录内）",
+    addCtrl(L"STATIC", L"历史按设备 IP 命名，保存在插件配置目录中",
             SS_LEFT | SS_WORDELLIPSIS, 24, 444, 300, 26, IDC_STATIC_HISTORY);
     st->hBtnClearHistory = addCtrl(L"BUTTON", L"清除历史", BS_PUSHBUTTON | WS_TABSTOP, 352, 438, 150, 26, IDC_BTN_CLEARHISTORY);
 

@@ -112,7 +112,13 @@ void PowerHistory::SaveToFile(const std::wstring& filePath) const {
 void PowerHistory::LoadFromFile(const std::wstring& filePath) {
     std::wifstream f(filePath.c_str());
     if (!f.is_open()) return;
-    std::wstring content((std::istreambuf_iterator<wchar_t>(f)), std::istreambuf_iterator<wchar_t>());
+    // 防御异常膨胀的文件：最多读取 4M 字符（正常 7 天数据约 25 万字符）
+    static constexpr size_t MAX_LOAD_CHARS = 4 * 1024 * 1024;
+    std::wstring content;
+    content.reserve(MAX_LOAD_CHARS + 1);
+    std::istreambuf_iterator<wchar_t> it(f), end;
+    for (size_t i = 0; i < MAX_LOAD_CHARS && it != end; ++i, ++it)
+        content.push_back(*it);
 
     std::lock_guard<std::mutex> lock(m_mutex);
     m_longterm.clear();
