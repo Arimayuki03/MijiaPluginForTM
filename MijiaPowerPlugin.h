@@ -1,4 +1,4 @@
-// MijiaPowerPlugin.h - 插件主类声明
+// MijiaPowerPlugin.h - 插件主类声明（多设备支持）
 #pragma once
 #include "pch.h"
 #include "PluginInterface.h"
@@ -6,18 +6,57 @@
 #include "PowerHistory.h"
 #include "PluginConfig.h"
 
+// 功率格式化（负值钳为0，可选W单位）
+std::wstring FormatWatts(double watts, int decimalPlaces, bool showUnit);
+
 // ─────────────────────────────────────────────
-// 功率显示项（主显示：实时功率）
+// 单个设备的运行时状态（连接、功率、历史）
+// ─────────────────────────────────────────────
+struct DeviceState {
+    DeviceConfig                cfg;                 // 该设备的配置快照（采集线程专用，受 mtx 保护）
+    std::unique_ptr<MiioDevice> device;              // miIO 连接（mtx 保护）
+    PowerHistory                history;             // 每设备独立历史
+    std::atomic<bool>           connected{ false };
+    std::atomic<double>         watts{ 0.0 };
+    std::mutex                  mtx;
+};
+
+// ─────────────────────────────────────────────
+// 功率显示项（每个插座一个）
 // ─────────────────────────────────────────────
 class CPowerItem : public IPluginItem {
 public:
-    void SetPlugin(class CMijiaPowerPlugin* plugin) { m_plugin = plugin; }
+    // index 为设备序号（0 起）。对象在插件构造时全部预创建，
+    // TrafficMonitor 启动时枚举并缓存 IPluginItem*，因此这些对象永不销毁。
+    void Init(class CMijiaPowerPlugin* plugin, int index) { m_plugin = plugin; m_index = index; }
 
     const wchar_t* GetItemName()            const override;
-    const wchar_t* GetItemId()              const override { return L"MijiaPowerW"; }
+    const wchar_t* GetItemId()              const override;
     const wchar_t* GetItemLableText()       const override;
     const wchar_t* GetItemValueText()       const override;
     const wchar_t* GetItemValueSampleText() const override { return L"9999.9W"; }
+
+private:
+    class CMijiaPowerPlugin* m_plugin = nullptr;
+    int  m_index = 0;
+    mutable std::wstring m_idText;
+    mutable std::wstring m_nameText;
+    mutable std::wstring m_valueText;
+    mutable std::wstring m_labelText;
+};
+
+// ─────────────────────────────────────────────
+// 总功率显示项（所有已连接插座之和）
+// ─────────────────────────────────────────────
+class CTotalPowerItem : public IPluginItem {
+public:
+    void SetPlugin(class CMijiaPowerPlugin* plugin) { m_plugin = plugin; }
+
+    const wchar_t* GetItemName()            const override { return L"米家插座总功率"; }
+    const wchar_t* GetItemId()              const override { return L"MijiaPwrTotal"; }
+    const wchar_t* GetItemLableText()       const override;
+    const wchar_t* GetItemValueText()       const override;
+    const wchar_t* GetItemValueSampleText() const override { return L"99999.9W"; }
 
 private:
     class CMijiaPowerPlugin* m_plugin = nullptr;
@@ -34,12 +73,12 @@ public:
     ~CMijiaPowerPlugin();
 
     // ── ITMPlugin 接口实现 ──
+    // 显示项枚举：0..设备数-1 为各插座，设备数>1 且开启总功率时，
+    // 索引=设备数 为总功率项，越界返回 nullptr。
     IPluginItem*   GetItem(int index)  override;
-    int            GetItemCount() const { return 1; }
     void           DataRequired()      override;
     const wchar_t* GetInfo(PluginInfoIndex index) override;
 
-    // 返回值改为 OptionReturn（官方接口）
     OptionReturn   ShowOptionsDialog(void* hParent) override;
 
     const wchar_t* GetTooltipInfo()    override;
@@ -57,21 +96,24 @@ public:
             m_sampleThread.detach();
     }
 
-    // 供 CPowerItem 访问
-    double         GetCurrentWatts()   const;
-    bool           IsConnected()       const { return m_connected.load(); }
-    const PowerHistory& GetHistory()   const { return m_history; }
+    // ── 供显示项访问 ──
+    int    GetDeviceCount() const;
+    bool   IsDeviceConnected(int index) const;
+    double GetDeviceWatts(int index) const;
+    double GetTotalWatts() const;          // 所有已连接设备功率之和
 
 private:
-    ITrafficMonitor*   m_pTM = nullptr;
-    CPowerItem         m_powerItem;
-    PowerHistory       m_history;
+    ITrafficMonitor* m_pTM = nullptr;
+    CPowerItem       m_items[MAX_DEVICES];  // 预创建槽位，指针永不失效
+    CTotalPowerItem  m_totalItem;
+
+    // 设备状态列表，顺序与配置一致；仅主线程修改，采集线程通过快照访问
+    std::vector<std::shared_ptr<DeviceState>> m_devices;
+    mutable std::mutex m_devicesMutex;
 
     // 后台采集线程
     std::thread        m_sampleThread;
     std::atomic<bool>  m_stopFlag{ false };
-    std::atomic<bool>  m_connected{ false };
-    std::atomic<double> m_currentWatts{ 0.0 };
 
     // tooltip缓存
     mutable std::wstring m_tooltipText;
@@ -80,11 +122,14 @@ private:
 
     void StartSampling();  // 启动采样线程（在配置目录确定后调用）
     void SampleLoop();
-    void ConnectDevice();
-    void DisconnectDevice();
+    void LazyInit(const std::wstring& configDir);  // 加载配置并启动采集（兼容新旧主程序）
+    void InitDevices();                    // 按当前配置建立设备状态（含历史加载）
+    void ApplyNewConfig();                 // 设置变更后重建设备状态（复用同 IP+Token 的连接与历史）
+    void SaveStateHistory(DeviceState& st, int index);
 
-    std::unique_ptr<MiioDevice> m_device;
-    mutable std::mutex          m_deviceMutex;
+    std::vector<std::shared_ptr<DeviceState>> SnapshotDevices() const;
+    static void ConnectOne(DeviceState& st);
+    static void PollOne(DeviceState& st, bool enableRecording);
 };
 
 // DLL 导出

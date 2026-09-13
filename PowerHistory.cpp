@@ -89,7 +89,7 @@ PowerStats PowerHistory::GetLongStats(int hours) const {
 // ─── 持久化（极简 JSON，无第三方库）────
 void PowerHistory::SaveToFile(const std::wstring& filePath) const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    std::wofstream f(filePath);
+    std::wofstream f(filePath.c_str());
     if (!f.is_open()) return;
     f << L"[";
     bool first = true;
@@ -103,7 +103,7 @@ void PowerHistory::SaveToFile(const std::wstring& filePath) const {
 }
 
 void PowerHistory::LoadFromFile(const std::wstring& filePath) {
-    std::wifstream f(filePath);
+    std::wifstream f(filePath.c_str());
     if (!f.is_open()) return;
     std::wstring content((std::istreambuf_iterator<wchar_t>(f)), std::istreambuf_iterator<wchar_t>());
 

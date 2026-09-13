@@ -1,16 +1,27 @@
-// PluginConfig.h - 插件配置管理（INI文件读写）
+// PluginConfig.h - 插件配置管理（INI文件读写，支持多设备）
 #pragma once
 #include "pch.h"
 
+// 最大支持设备数（与显示项一一对应，设置对话框同样受此限制）
+static const int MAX_DEVICES = 8;
+
+struct DeviceConfig {
+    std::wstring ip;
+    std::wstring token;
+    std::wstring name    = L"米家插座";
+
+    // 按 IP+Token 判断是否同一设备（用于配置变更时保留连接与历史）
+    bool SameAs(const DeviceConfig& o) const { return ip == o.ip && token == o.token; }
+};
+
 struct PluginConfig {
-    // 设备信息
-    std::wstring deviceIp;
-    std::wstring deviceToken;
-    std::wstring deviceName    = L"米家插座";
+    // 设备列表（多设备支持）
+    std::vector<DeviceConfig> devices;
 
     // 功能开关
     bool enableRecording   = true;    // 是否记录功率历史
-    bool showLabel         = true;    // 是否显示标签"功率:"
+    bool showLabel         = true;    // 是否显示标签（设备名称）
+    bool showTotal         = true;    // 是否显示总功率项（2个及以上设备时）
     int  updateIntervalSec = 3;       // 采集间隔（秒）
 
     // 显示格式
@@ -32,8 +43,9 @@ public:
     PluginConfig& Get() { return m_cfg; }
     const PluginConfig& Get() const { return m_cfg; }
 
-    // 历史文件路径
-    std::wstring GetHistoryFilePath() const;
+    // 第 index（0起）个设备的历史文件路径；旧版单设备历史文件路径
+    std::wstring GetHistoryFilePath(int index) const;
+    std::wstring GetLegacyHistoryFilePath() const;
 
 private:
     std::wstring  m_dir;
