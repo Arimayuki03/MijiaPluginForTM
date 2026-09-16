@@ -21,3 +21,4 @@
 #define IDC_BTN_ADDDEV        1017
 #define IDC_BTN_DELDEV        1018
 #define IDC_CHECK_TOTAL       1019
+#define IDC_COMBO_TTSTATS     1020

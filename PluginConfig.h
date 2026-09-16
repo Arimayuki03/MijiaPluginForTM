@@ -19,6 +19,8 @@ struct DeviceConfig {
     std::wstring ip;
     std::wstring token;
     std::wstring name    = L"米家插座";
+    bool inTotal         = true;   // 是否计入总功率合计
+    bool enabled         = true;   // 是否启用（禁用后不采集连接，数值显示“已禁用”）
 
     // 按 IP+Token 判断是否同一设备（用于配置变更时保留连接与历史）
     bool SameAs(const DeviceConfig& o) const { return ip == o.ip && token == o.token; }
@@ -33,10 +35,10 @@ struct PluginConfig {
     bool showLabel         = true;    // 是否显示标签（设备名称）
     bool showTotal         = true;    // 是否显示总功率项（2个及以上设备时）
     int  updateIntervalSec = 3;       // 采集间隔（秒）
-
     // 显示格式
     bool showUnit          = true;    // 是否显示 W 单位
     int  decimalPlaces     = 1;       // 小数位数（0/1/2）
+    int  tooltipStatsHours = 1;       // 悬停提示统计窗口（小时，1-24）
 };
 
 class ConfigManager {

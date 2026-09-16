@@ -88,8 +88,11 @@ const wchar_t* CPowerItem::GetItemValueText() const {
         return m_valueText.c_str();
     }
     const DeviceConfig& dev = cfg.devices[m_index];
+    // 禁用的设备不采集连接，显示“已禁用”而非“连接中...”
+    if (!dev.enabled)
+        m_valueText = L"已禁用";
     // Token 格式非法时不可能连接成功，显示“未配置”而非永远“连接中...”
-    if (dev.ip.empty() || dev.token.empty() || !IsValidToken(dev.token))
+    else if (dev.ip.empty() || dev.token.empty() || !IsValidToken(dev.token))
         m_valueText = L"未配置";
     else if (!m_plugin || !m_plugin->IsDeviceConnected(m_index))
         m_valueText = L"连接中...";
@@ -113,6 +116,8 @@ const wchar_t* CTotalPowerItem::GetItemValueText() const {
     bool any = false;
     double sum = 0;
     for (int i = 0; i < n; ++i) {
+        // 只合计勾选“计入总功率”且已启用的设备
+        if (!cfg.devices[i].inTotal || !cfg.devices[i].enabled) continue;
         if (m_plugin->IsDeviceConnected(i)) {
             any = true;
             sum += m_plugin->GetDeviceWatts(i);
@@ -323,6 +328,12 @@ void CMijiaPowerPlugin::PollOne(DeviceState& st, bool enableRecording) {
         std::lock_guard<std::mutex> lock(st.mtx);
         cfg = st.cfg;
     }
+    // 禁用的设备不采集；若此前已连接（配置刚改为禁用），主动断开
+    if (!cfg.enabled) {
+        if (st.device) st.device.reset();
+        st.connected = false;
+        return;
+    }
     if (cfg.ip.empty() || cfg.token.empty()) return;
 
     char ip[256], token[256];
@@ -441,7 +452,7 @@ const wchar_t* CMijiaPowerPlugin::GetInfo(PluginInfoIndex index) {
     case TMI_AUTHOR:      return L"MijiaPlug";
     case TMI_COPYRIGHT:   return L"2024 MijiaPlug";
     case TMI_URL:         return L"";
-    case TMI_VERSION:     return L"1.1.4";
+    case TMI_VERSION:     return L"1.2.4";
     default:              return L"";
     }
 }
@@ -466,7 +477,12 @@ ITMPlugin::OptionReturn CMijiaPowerPlugin::ShowOptionsDialog(void* hParent) {
 }
 
 const wchar_t* CMijiaPowerPlugin::GetTooltipInfo() {
-    // 与 v1.0 相同的详细样式：每个插座显示当前功率和 10分钟/1小时/24小时 统计
+    // 紧凑样式：每台设备一行（当前功率 + N 小时内最高/最低/平均），末行合计。
+    // N 由设置中的“悬浮统计时段”指定（1-24 小时），基于分钟级历史数据。
+    // 约束：TM 把所有插件的 tooltip 拼成一条喂给 MFC CToolTipCtrl::UpdateTipText，
+    // 后者对超过 1024 字符的文本抛 CInvalidArgException（宿主弹"遇到不适当的参数。"）。
+    // 本插件曾用每设备 15 行的详细样式（3 设备即 700+ 字符），与其他插件同载时会越界，
+    // 故总长收在 ~400 字符内；完整统计仍在设置窗口查看。
     auto cfg = ConfigManager::Instance().Get();
     auto devs = SnapshotDevices();
 
@@ -479,43 +495,30 @@ const wchar_t* CMijiaPowerPlugin::GetTooltipInfo() {
     double total = 0;
     int connectedCount = 0;
     for (int i = 0; i < n; ++i) {
-        if (i > 0) oss << L"\n";    // 设备之间空一行
-        oss << L"【" << cfg.devices[i].name << L"】";
+        if (i > 0) oss << L"\n";
+        // 设备名截断，防超长自定义名
+        std::wstring name = cfg.devices[i].name;
+        if (name.size() > 16) name.assign(name, 0, 15).append(L"…");
+        oss << L"【" << name << L"】";
 
         if (!devs[i]->connected.load()) {
-            oss << L"\n状态：未连接";
-            if (!cfg.devices[i].ip.empty())
-                oss << L"\nIP：" << cfg.devices[i].ip;
+            oss << (cfg.devices[i].enabled ? L" 未连接" : L" 已禁用");
             continue;
         }
 
         double w = devs[i]->watts.load();
-        total += w;
-        ++connectedCount;
-        oss << L"\n当前功率：" << w << L" W";
+        if (cfg.devices[i].inTotal && cfg.devices[i].enabled) {   // 与总功率项一致
+            total += w;
+            ++connectedCount;
+        }
+        oss << L" " << w << L" W";
 
+        // N 小时内最高/最低/平均（分钟级历史，需开启历史记录且已有数据）
         if (cfg.enableRecording) {
-            auto st10m = devs[i]->history.GetStats(600);
-            if (st10m.valid) {
-                oss << L"\n--- 最近10分钟 ---"
-                    << L"\n  最大：" << st10m.maxW << L" W"
-                    << L"\n  最小：" << st10m.minW << L" W"
-                    << L"\n  平均：" << st10m.avgW << L" W";
-            }
-            auto st1h = devs[i]->history.GetLongStats(1);
-            if (st1h.valid) {
-                oss << L"\n--- 最近1小时 ---"
-                    << L"\n  最大：" << st1h.maxW << L" W"
-                    << L"\n  最小：" << st1h.minW << L" W"
-                    << L"\n  平均：" << st1h.avgW << L" W";
-            }
-            auto st24h = devs[i]->history.GetLongStats(24);
-            if (st24h.valid) {
-                oss << L"\n--- 最近24小时 ---"
-                    << L"\n  最大：" << st24h.maxW << L" W"
-                    << L"\n  最小：" << st24h.minW << L" W"
-                    << L"\n  平均：" << st24h.avgW << L" W";
-            }
+            auto st = devs[i]->history.GetLongStats(cfg.tooltipStatsHours);
+            if (st.valid)
+                oss << L"（" << cfg.tooltipStatsHours << L"h内 最高" << st.maxW
+                    << L" 最低" << st.minW << L" 均" << st.avgW << L"）";
         }
     }
 
@@ -523,5 +526,14 @@ const wchar_t* CMijiaPowerPlugin::GetTooltipInfo() {
         oss << L"\n合计：" << total << L" W";
 
     m_tooltipText = oss.str();
+    // 兜底护栏：极端情况下（多设备+超长名）也不越过 MFC 上限
+    if (m_tooltipText.size() > 400) {
+        std::wstring clipped = m_tooltipText.substr(0, 399);
+        // 避免截断在半个换行处影响观感
+        size_t lastNl = clipped.rfind(L'\n');
+        if (lastNl != std::wstring::npos && lastNl > 100) clipped.resize(lastNl);
+        clipped += L"\n…（已折叠，详情见设置）";
+        m_tooltipText = clipped;
+    }
     return m_tooltipText.c_str();
 }

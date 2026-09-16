@@ -105,6 +105,9 @@ void ConfigManager::Load() {
             d.token = ReadIniString(sec, L"Token", L"",        p);
             d.name  = ReadIniString(sec, L"Name",  L"米家插座", p);
             if (d.name.empty()) d.name = L"米家插座";
+            // 旧版本无 InTotal/Enabled 键：缺省视为计入/启用（与升级前行为一致）
+            d.inTotal = ReadIniBool(sec, L"InTotal", true, p);
+            d.enabled = ReadIniBool(sec, L"Enabled", true, p);
             cfg.devices.push_back(d);
         }
     }
@@ -116,12 +119,15 @@ void ConfigManager::Load() {
     cfg.showUnit          = ReadIniBool(L"Plugin", L"ShowUnit",          true, p);
     cfg.updateIntervalSec = ReadIniInt (L"Plugin", L"UpdateIntervalSec", 3,    p);
     cfg.decimalPlaces     = ReadIniInt (L"Plugin", L"DecimalPlaces",     1,    p);
+    cfg.tooltipStatsHours = ReadIniInt (L"Plugin", L"TooltipStatsHours", 1,    p);
 
     // 约束
     if (cfg.updateIntervalSec < 1)  cfg.updateIntervalSec = 1;
     if (cfg.updateIntervalSec > 60) cfg.updateIntervalSec = 60;
     if (cfg.decimalPlaces < 0) cfg.decimalPlaces = 0;
     if (cfg.decimalPlaces > 2) cfg.decimalPlaces = 2;
+    if (cfg.tooltipStatsHours < 1)  cfg.tooltipStatsHours = 1;
+    if (cfg.tooltipStatsHours > 24) cfg.tooltipStatsHours = 24;
     if (cfg.devices.empty()) cfg.devices.push_back(DeviceConfig{});
 
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -143,6 +149,8 @@ void ConfigManager::Save() const {
         WritePrivateProfileStringW(sec.c_str(), L"IP",    d.ip.c_str(),    p.c_str());
         WritePrivateProfileStringW(sec.c_str(), L"Token", d.token.c_str(), p.c_str());
         WritePrivateProfileStringW(sec.c_str(), L"Name",  d.name.c_str(),  p.c_str());
+        WritePrivateProfileStringW(sec.c_str(), L"InTotal", d.inTotal ? L"1" : L"0", p.c_str());
+        WritePrivateProfileStringW(sec.c_str(), L"Enabled", d.enabled ? L"1" : L"0", p.c_str());
     }
     // 清理多余的旧设备段（删除键即可）
     for (int i = count + 1; i <= MAX_DEVICES + 1; ++i) {
@@ -150,6 +158,8 @@ void ConfigManager::Save() const {
         WritePrivateProfileStringW(sec.c_str(), L"IP",    L"", p.c_str());
         WritePrivateProfileStringW(sec.c_str(), L"Token", L"", p.c_str());
         WritePrivateProfileStringW(sec.c_str(), L"Name",  L"", p.c_str());
+        WritePrivateProfileStringW(sec.c_str(), L"InTotal", L"", p.c_str());
+        WritePrivateProfileStringW(sec.c_str(), L"Enabled", L"", p.c_str());
     }
     // 清理 v1.0 遗留的单设备段（Token 不应多留一份明文）
     WritePrivateProfileStringW(L"Device", L"IP",    L"", p.c_str());
@@ -165,4 +175,6 @@ void ConfigManager::Save() const {
     WritePrivateProfileStringW(L"Plugin", L"UpdateIntervalSec", buf, p.c_str());
     swprintf(buf, 32, L"%d", m_cfg.decimalPlaces);
     WritePrivateProfileStringW(L"Plugin", L"DecimalPlaces", buf, p.c_str());
+    swprintf(buf, 32, L"%d", m_cfg.tooltipStatsHours);
+    WritePrivateProfileStringW(L"Plugin", L"TooltipStatsHours", buf, p.c_str());
 }
