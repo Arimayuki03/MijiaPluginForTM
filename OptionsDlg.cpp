@@ -36,8 +36,14 @@ static UINT GetDialogDpi(HWND hParent) {
         if (GetCursorPos(&pt)) hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
     }
     if (hMon) {
-        HMODULE hShcore = GetModuleHandleW(L"Shcore.dll");
-        if (!hShcore) hShcore = LoadLibraryW(L"Shcore.dll");
+        // 模块句柄提为函数局部 static 缓存：Shcore.dll 为系统 DLL，有意保留至
+        // 进程结束（不 FreeLibrary），避免每次打开设置对话框重复加载/释放
+        static HMODULE s_hShcore = nullptr;
+        if (!s_hShcore) {
+            s_hShcore = GetModuleHandleW(L"Shcore.dll");
+            if (!s_hShcore) s_hShcore = LoadLibraryW(L"Shcore.dll");
+        }
+        HMODULE hShcore = s_hShcore;
         if (hShcore) {
             auto pfn = reinterpret_cast<HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*)>(
                 GetProcAddress(hShcore, "GetDpiForMonitor"));
@@ -80,6 +86,7 @@ struct DlgState {
     std::vector<HFONT> oldFonts;         // DPI 变更换下的旧字体（销毁后统一删除）
     CMijiaPowerPlugin* plugin = nullptr; // “清除历史”时同步清理内存数据
     HWND hList = nullptr;
+    WNDPROC oldListProc = nullptr;       // 设备列表原始窗口过程（随 DlgState 生命周期，本次 Show 有效）
     HWND hEditIp = nullptr, hEditToken = nullptr, hEditName = nullptr, hEditInterval = nullptr;
     HWND hCheckRecord = nullptr, hCheckLabel = nullptr, hCheckUnit = nullptr, hCheckTotal = nullptr;
     HWND hComboDecimal = nullptr, hComboTtStats = nullptr, hStaticStatus = nullptr;
@@ -97,6 +104,9 @@ static void CaptureFieldsToWorking(DlgState* st) {
     GetWindowTextW(st->hEditName,  buf, 512); st->devices[st->curSel].name  = buf;
     GetWindowTextW(st->hEditIp,    buf, 512); st->devices[st->curSel].ip    = buf;
     GetWindowTextW(st->hEditToken, buf, 512); st->devices[st->curSel].token = buf;
+    // 净化设备名：剔除换行/制表符等控制字符，防止破坏任务栏标签排版并干扰
+    // 400 字符护栏计算；IP/Token 不做净化
+    SanitizeDeviceName(st->devices[st->curSel].name);
 }
 
 // ─── 当前选中设备 → 编辑框 ───
@@ -117,11 +127,19 @@ static void RefreshDeviceList(DlgState* st) {
     SendMessageW(st->hList, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < (int)st->devices.size(); ++i) {
         const DeviceConfig& d = st->devices[i];
+        // 名称/IP 过长时先钳制到固定上限（超出取前 63/199 字符 + 省略号），
+        // 避免 swprintf 静默截断整行；用局部副本，不改动 st->devices 原数据
+        auto clamp = [](const std::wstring& s, size_t keep) -> std::wstring {
+            if (s.size() <= keep) return s;
+            return s.substr(0, keep) + L"…";
+        };
+        std::wstring name = clamp(d.name, 63);
+        std::wstring ip   = clamp(d.ip, 199);
         wchar_t line[560];
-        if (d.ip.empty())
-            swprintf(line, 560, L"%d. %ls (未设置IP)", i + 1, d.name.c_str());
+        if (ip.empty())
+            swprintf(line, 560, L"%d. %ls (未设置IP)", i + 1, name.c_str());
         else
-            swprintf(line, 560, L"%d. %ls (%ls)", i + 1, d.name.c_str(), d.ip.c_str());
+            swprintf(line, 560, L"%d. %ls (%ls)", i + 1, name.c_str(), ip.c_str());
         SendMessageW(st->hList, LB_ADDSTRING, 0, (LPARAM)line);
     }
     if (st->curSel >= 0 && st->curSel < (int)st->devices.size())
@@ -144,8 +162,6 @@ static int DpiLeftHot(const DlgState* st) { return ScaleByDpi(CB_LEFT_HOT,  st ?
 static int DpiRightHot(const DlgState* st){ return ScaleByDpi(CB_RIGHT_HOT, st ? st->dpi : 96); }
 
 // ─── 设备列表子类化：点击行首/行尾复选框切换，空格切换“启用” ───
-static WNDPROC s_oldListProc = nullptr;
-
 static LRESULT CALLBACK ListSubProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     DlgState* st = reinterpret_cast<DlgState*>(GetWindowLongPtrW(h, GWLP_USERDATA));
     switch (msg) {
@@ -170,7 +186,7 @@ static LRESULT CALLBACK ListSubProc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
         }
         break;
     }
-    return CallWindowProcW(s_oldListProc, h, msg, wp, lp);
+    return CallWindowProcW(st ? st->oldListProc : DefWindowProcW, h, msg, wp, lp);
 }
 
 // ─── 自绘设备列表行：[启用□] 文本 …… [计入□] ───
@@ -286,7 +302,7 @@ static void CreateControls(HWND hWnd, DlgState* st, UINT dpi) {
                         22, 44, 278, 140, IDC_LIST_DEVICES);
     SendMessageW(st->hList, LB_SETITEMHEIGHT, 0, DpiItemH(st));
     SetWindowLongPtrW(st->hList, GWLP_USERDATA, (LONG_PTR)st);
-    s_oldListProc = (WNDPROC)SetWindowLongPtrW(st->hList, GWLP_WNDPROC, (LONG_PTR)ListSubProc);
+    st->oldListProc = (WNDPROC)SetWindowLongPtrW(st->hList, GWLP_WNDPROC, (LONG_PTR)ListSubProc);
     st->hBtnAdd = addCtrl(L"BUTTON", L"添加设备", BS_PUSHBUTTON | WS_TABSTOP, 22, 192, 132, 26, IDC_BTN_ADDDEV);
     st->hBtnDel = addCtrl(L"BUTTON", L"删除选中设备", BS_PUSHBUTTON | WS_TABSTOP, 168, 192, 132, 26, IDC_BTN_DELDEV);
 
@@ -339,7 +355,7 @@ static void CreateControls(HWND hWnd, DlgState* st, UINT dpi) {
 
     // ─── 历史数据分组 ───
     addCtrl(L"BUTTON", L"历史数据", BS_GROUPBOX, 10, 348, 600, 52, 0);
-    addCtrl(L"STATIC", L"历史按设备 IP 命名，保存在插件配置目录中",
+    addCtrl(L"STATIC", L"历史按设备 IP+槽位命名，保存在插件配置目录中",
             SS_LEFT | SS_WORDELLIPSIS, 24, 368, 380, 20, IDC_STATIC_HISTORY);
     st->hBtnClearHistory = addCtrl(L"BUTTON", L"清除历史", BS_PUSHBUTTON | WS_TABSTOP, 440, 362, 156, 26, IDC_BTN_CLEARHISTORY);
 
@@ -387,6 +403,20 @@ static bool SaveFromDialog(DlgState* st) {
     wchar_t buf[512];
 
     CaptureFieldsToWorking(st);
+
+    // 保存前校验各设备 Token（N 为 1 起序号）：非空但格式非法时提示并返回 false
+    // 保持对话框打开，避免非法 token 设备每轮采集都白等 5 秒超时；
+    // 空 Token 视为“未配置”，允许保存（与既有 UX 一致）
+    for (int i = 0; i < (int)st->devices.size(); ++i) {
+        const std::wstring& tok = st->devices[i].token;
+        if (!tok.empty() && !IsValidToken(tok)) {
+            wchar_t msg[128];
+            swprintf(msg, 128, L"设备 %d 的 Token 格式错误：应为 32 位十六进制字符串", i + 1);
+            SetWindowTextW(st->hStaticStatus, msg);
+            return false;
+        }
+    }
+
     cfg.devices = st->devices;
 
     GetWindowTextW(st->hEditInterval, buf, 32);
@@ -525,10 +555,14 @@ static LRESULT CALLBACK DlgWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lP
             try {
                 MiioDevice dev(ip, token, 5000);
                 double watts = 0;
-                if (dev.GetPower(watts)) {
+                auto r = dev.QueryPower(watts);
+                if (r == MiioQueryResult::Ok) {
                     wchar_t msg2[128];
                     swprintf(msg2, 128, L"连接成功！当前功率：%.1fW", watts);
                     SetWindowTextW(st->hStaticStatus, msg2);
+                } else if (r == MiioQueryResult::NoData) {
+                    // 设备在线并已应答，只是不支持功率属性——与连接失败区分开
+                    SetWindowTextW(st->hStaticStatus, L"设备在线，但未返回功率属性（该型号可能不支持功率查询）");
                 } else {
                     SetWindowTextW(st->hStaticStatus, L"连接失败，请检查 IP/Token 和网络");
                 }

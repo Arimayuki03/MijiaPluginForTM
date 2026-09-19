@@ -18,30 +18,24 @@ struct PowerStats {
 
 class PowerHistory {
 public:
-    static const size_t MAX_REALTIME = 600;   // 最近10分钟（1秒一次）；3秒间隔下覆盖30分钟
     static const size_t MAX_LONG     = 10080; // 7天（1分钟一次）
 
     PowerHistory();
     ~PowerHistory() = default;
 
-    // 添加一个实时采样点
+    // 添加一个采样点（按分钟聚合写入长期队列：同一分钟只记首条）
     void AddSample(double watts);
 
     // 清空全部历史（内存）；供“清除历史”使用，避免旧数据之后被写回文件
     void Clear();
 
-    // 最近 N 秒的实时样本
-    std::vector<PowerSample> GetRecentSamples(int seconds = 600) const;
-
     // 长期（按分钟聚合）样本
     std::vector<PowerSample> GetLongSamples(int hours = 1) const;
 
-    // 当前瞬时功率（最后一次采样）
-    double GetCurrentWatts() const;
-    bool   HasData() const;
+    // 是否有历史数据（长期队列非空）
+    bool HasData() const;
 
     // 统计
-    PowerStats GetStats(int seconds) const;       // 实时段
     PowerStats GetLongStats(int hours) const;     // 长期段
 
     // 持久化（保存/加载长期历史到JSON文件）
@@ -50,7 +44,6 @@ public:
 
 private:
     mutable std::mutex       m_mutex;
-    std::deque<PowerSample>  m_realtime;  // 实时环形缓冲
     std::deque<PowerSample>  m_longterm;  // 长期（分钟级）
     double                   m_lastMinTs = 0.0; // 最后长期采样的分钟时间戳
 

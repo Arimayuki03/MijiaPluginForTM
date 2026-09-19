@@ -27,6 +27,17 @@ namespace MiioAES {
                  std::vector<unsigned char>& plaintext);
 }
 
+// ─── miIO 查询结果（三态） ───
+// Ok：拿到功率值；
+// NoData：设备在线并已应答，但不支持目标属性/无该数据（保持连接，上层显示 "--"，
+//         与"连接失效须重连"区分开——否则不支持该属性的设备会无限重连）；
+// TransportError：握手/网络/协议层失败（上层应丢弃连接对象，下轮重连）
+enum class MiioQueryResult {
+    Ok,
+    NoData,
+    TransportError
+};
+
 // ─── miIO 设备类 ───
 class MiioDevice {
 public:
@@ -36,15 +47,16 @@ public:
     ~MiioDevice();
 
     bool Handshake();
-    bool IsHandshaked() const { return m_handshaked; }
 
-    // 发送命令，返回 result 字段 JSON 字符串
-    bool Send(const std::string& method, const std::string& paramsJson, std::string& outResult);
-
-    // 获取功率 (W)
-    bool GetPower(double& outWatts);
+    // 查询功率 (W)。取代旧 GetPower(double&)：设备应答错误（无 "value" 字段）
+    // 不再与网络失败混为一谈，调用方可区分"重连"与"保持连接显示 --"
+    MiioQueryResult QueryPower(double& outWatts);
 
 private:
+    // 发送命令并取回响应 JSON（错误应答时返回整个响应且返回 true，
+    // 由调用方按找不到期望字段处理）
+    bool Send(const std::string& method, const std::string& paramsJson, std::string& outResult);
+
     std::string  m_ip;
     unsigned char m_token[16];
     bool         m_tokenValid = false;  // token 是否为合法的 32 位十六进制

@@ -350,13 +350,23 @@ bool Decrypt(const unsigned char key[16], const unsigned char iv[16],
 // MiioDevice 实现
 // ════════════════════════════════════════
 
-// HEX 字符串转字节
+// HEX 半字节解析（只接受 0-9/a-f/A-F）
+static bool HexNibble(char c, unsigned int& v) {
+    if (c >= '0' && c <= '9') { v = (unsigned int)(c - '0'); return true; }
+    if (c >= 'a' && c <= 'f') { v = (unsigned int)(c - 'a' + 10); return true; }
+    if (c >= 'A' && c <= 'F') { v = (unsigned int)(c - 'A' + 10); return true; }
+    return false;
+}
+
+// HEX 字符串转字节（逐字符严格校验）。
+// 不得用 sscanf_s("%2x")：它对 "eg" 这类半非法对会解析出部分值并吞掉非法字符，
+// 导致部分非法 token 被放行、每轮白等 5 秒超时
 static bool HexToBytes(const std::string& hex, unsigned char* out, size_t outLen) {
     if (hex.size() != outLen * 2) return false;
     for (size_t i = 0; i < outLen; i++) {
-        unsigned int v = 0;
-        if (sscanf_s(hex.c_str() + i * 2, "%2x", &v) != 1) return false;
-        out[i] = (unsigned char)v;
+        unsigned int hi, lo;
+        if (!HexNibble(hex[i * 2], hi) || !HexNibble(hex[i * 2 + 1], lo)) return false;
+        out[i] = (unsigned char)((hi << 4) | lo);
     }
     return true;
 }
@@ -366,12 +376,20 @@ static void WriteBE16(unsigned char* p, unsigned short v) { p[0]=(v>>8)&0xFF; p[
 static void WriteBE32(unsigned char* p, unsigned int v) { p[0]=(v>>24)&0xFF; p[1]=(v>>16)&0xFF; p[2]=(v>>8)&0xFF; p[3]=v&0xFF; }
 static unsigned int ReadBE32(const unsigned char* p) { return ((unsigned int)p[0]<<24)|((unsigned int)p[1]<<16)|((unsigned int)p[2]<<8)|p[3]; }
 
+// Winsock 进程级一次初始化：插件与宿主同进程存活，逐设备 Startup/Cleanup
+// 配对徒增开销且此前不检查返回值；初始化失败时无法恢复，
+// 后续 socket() 必然失败并按"连接失败"走既有失败路径
+static void EnsureWinsock() {
+    static std::once_flag s_once;
+    std::call_once(s_once, [] {
+        WSADATA wsaData{};
+        WSAStartup(MAKEWORD(2, 2), &wsaData);
+    });
+}
+
 MiioDevice::MiioDevice(const std::string& ip, const std::string& token, int timeoutMs)
     : m_ip(ip), m_timeoutMs(timeoutMs), m_handshaked(false) {
-    // 网络栈初始化（引用计数，与析构中的 WSACleanup 配对；
-    // 不在每次收发时重复调用）
-    WSADATA wsaData;
-    WSAStartup(MAKEWORD(2,2), &wsaData);
+    EnsureWinsock();
 
     // token hex -> bytes（非法 token 时 m_tokenValid=false，后续请求直接失败）
     memset(m_token, 0, 16);
@@ -386,7 +404,8 @@ MiioDevice::MiioDevice(const std::string& ip, const std::string& token, int time
 }
 
 MiioDevice::~MiioDevice() {
-    WSACleanup();
+    // 不调用 WSACleanup：Winsock 已改为进程级一次初始化，
+    // 逐设备配对清理会在多设备并存时互相拆引用
 }
 
 unsigned int MiioDevice::CurrentStamp() const {
@@ -556,27 +575,29 @@ bool MiioDevice::Send(const std::string& method, const std::string& paramsJson, 
     return true;
 }
 
-bool MiioDevice::GetPower(double& outWatts) {
+MiioQueryResult MiioDevice::QueryPower(double& outWatts) {
     // get_properties: siid=11, piid=2 (功率)
     std::string params = "[{\"did\":\"prop\",\"siid\":11,\"piid\":2}]";
     std::string result;
-    if (!Send("get_properties", params, result)) return false;
-    // 在结果中找 "value": 数字
+    if (!Send("get_properties", params, result)) return MiioQueryResult::TransportError;
+    // 在结果中找 "value": 数字。找不到说明设备在线应答了错误（如不支持该属性），
+    // 属于 NoData 而非传输失败——上层据此保持连接显示 "--"，
+    // 而不是当作连接失效无限重连
     auto pos = result.find("\"value\":");
-    if (pos == std::string::npos) return false;
+    if (pos == std::string::npos) return MiioQueryResult::NoData;
     pos += 8;
     while (pos < result.size() && (result[pos]==' ' || result[pos]=='\t')) pos++;
     double val = 0.0;
     if (pos < result.size() && result[pos] == '"') {
         // 部分固件把属性值返回为字符串（"value":"23.4"）
         auto end = result.find('"', pos + 1);
-        if (end == std::string::npos) return false;
+        if (end == std::string::npos) return MiioQueryResult::NoData;
         try { val = std::stod(result.substr(pos + 1, end - pos - 1)); }
-        catch (...) { return false; }
+        catch (...) { return MiioQueryResult::NoData; }
     } else {
         try { val = std::stod(result.substr(pos)); }
-        catch (...) { return false; }
+        catch (...) { return MiioQueryResult::NoData; }
     }
     outWatts = val;
-    return true;
+    return MiioQueryResult::Ok;
 }
