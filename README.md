@@ -5,6 +5,9 @@
 **在 Windows 任务栏实时显示米家/酷控（cuco）智能插座的功率**
 多设备同显 · 总功率合计 · 功率历史统计 · 单文件 DLL · 零第三方依赖
 
+> [!NOTE]
+> 本项目 fork 自 [cxhoyo/MijiaPluginForTM](https://github.com/cxhoyo/MijiaPluginForTM)，并在此基础上持续迭代（v1.1.0 起的多设备支持、DPI 适配与多轮稳定性修复均由本 fork 完成）。感谢原作者的奠基工作。
+
 [![Release](https://img.shields.io/github/v/release/Arimayuki03/MijiaPluginForTM?sort=semver&color=success)](https://github.com/Arimayuki03/MijiaPluginForTM/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/Arimayuki03/MijiaPluginForTM/total?color=success)](https://github.com/Arimayuki03/MijiaPluginForTM/releases)
 [![License](https://img.shields.io/github/license/Arimayuki03/MijiaPluginForTM?color=blue)](LICENSE)
@@ -84,7 +87,7 @@
    ```
    设备名称: 客厅插座
    Model:    cuco.plug.v3
-   IP:       192.168.1.100
+   IP:       192.0.2.100
    Token:    a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
    ```
 5. **保存信息**：⚠️ Token 等同于设备控制权，请妥善保管，不要分享给他人
@@ -194,24 +197,24 @@ DecimalPlaces=1
 TooltipStatsHours=1
 
 [Device1]
-IP=192.168.1.100
-Token=2f5a8c1e9b3d47a6b0c8d2e4f6a8b0c2
+IP=192.0.2.101
+Token=2b7f4a9c1d3e5f60718293a4b5c6d7e8
 Name=客厅插座
 InTotal=1
 Enabled=1
 HistorySlot=1
 
 [Device2]
-IP=192.168.1.101
-Token=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6
+IP=192.0.2.102
+Token=0f1e2d3c4b5a69788796a5b4c3d2e1f0
 Name=书房插座
 InTotal=0
 Enabled=0
 HistorySlot=2
 
 [Device3]
-IP=192.168.1.102
-Token=00112233445566778899aabbccddeeff
+IP=192.0.2.103
+Token=5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d
 Name=卧室插座
 InTotal=1
 Enabled=1
@@ -313,7 +316,7 @@ HistorySlot=3
 ## 🙏 致谢
 
 - [TrafficMonitor](https://github.com/zhongyang219/TrafficMonitor) — 优秀的 Windows 任务栏监控工具，本项目为其插件
-- [cxhoyo/MijiaPluginForTM](https://github.com/cxhoyo/MijiaPluginForTM) — 本项目 fork 自原仓库，在其基础上持续迭代
+- [cxhoyo/MijiaPluginForTM](https://github.com/cxhoyo/MijiaPluginForTM) — 原仓库，本项目 fork 自它并持续迭代；v1.0 单设备版与设备属性定义来自原作者
 - [Xiaomi-cloud-tokens-extractor](https://github.com/PiotrMachowski/Xiaomi-cloud-tokens-extractor) — 便捷的 Token 提取工具
 
 ## 📜 更新日志
